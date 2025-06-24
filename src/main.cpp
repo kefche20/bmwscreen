@@ -1,5 +1,3 @@
-// TODO: 
-// crazy todo listchik
 
 // TODO: (DME4) from instrument cluster https://forums.bimmerforums.com/forum/showthread.php?1887229-E46-Can-bus-project
 // - add a way to request vin from the instrument cluster
@@ -266,10 +264,10 @@ void setup() {
   u8g2.clearBuffer();
   
   if(!SPIFFS.begin()){
-	Serial.println("❌ SPIFFS Mount Failed");
+	Serial.println("SPIFFS Mount Failed");
   }
   else{
-	Serial.println("✅ SPIFFS Mount Success");
+	Serial.println("SPIFFS Mount Success");
   }
 
   if(show_intro)
@@ -294,14 +292,14 @@ void drawIntro() {
     u8g2.clearBuffer();
     File animFile = SPIFFS.open("/bmw_animation.bin");
     if(!animFile){
-    Serial.println("❌ Failed to open file");
+    Serial.println("Failed to open file");
     }
     else{
-    Serial.println("✅ File opened successfully");
+    Serial.println("File opened successfully");
     }
   	for (int i = 0; i < 171; i++) {
 		if(animFile.read(bmw_animation, FRAME_SIZE) != FRAME_SIZE){
-			Serial.println("❌ Failed to read frame");
+			Serial.println("Failed to read frame");
 			break;
 		}
 		u8g2.clearBuffer();
@@ -628,8 +626,8 @@ void updateFakeData() {
     
     // Simulate RPM with acceleration and deceleration
     if (abs(dme1.rpm - targetRPM) < 100) {
-        targetRPM = random(1000, 7000);
-        rpmAcceleration = random(10, 50) * rpmDirection;
+        targetRPM = random(3500, 7300);
+        rpmAcceleration = random(10, 350) * rpmDirection;
     }
     
     dme1.rpm += rpmAcceleration;
