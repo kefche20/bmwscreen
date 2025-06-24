@@ -251,9 +251,9 @@ void setup() {
 
   // Initialize CAN
   if (CAN.begin(MCP_ANY, CAN_500KBPS, MCP_8MHZ) == CAN_OK) {
-    Serial.println("✅ MCP2515 initialized.");
+    Serial.println("MCP2515 initialized.");
   } else {
-    Serial.println("❌ MCP2515 init failed. Check wiring.");
+    Serial.println("MCP2515 init failed. Check wiring.");
     while (1);
   }
   CAN.setMode(MCP_NORMAL);
