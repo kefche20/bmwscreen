@@ -1,4 +1,3 @@
-
 // TODO: (DME4) from instrument cluster https://forums.bimmerforums.com/forum/showthread.php?1887229-E46-Can-bus-project
 // - add a way to request vin from the instrument cluster
 // - add a way to request cluster data from the instrument cluster
@@ -8,6 +7,8 @@
 #include <Wire.h>
 #include <U8g2lib.h>
 #include "SPIFFS.h"
+#include "BMW_CAN.h"
+#include "Kawasaki_CAN.h"
 
 // === PIN DEFINITIONS ===
 #define CAN_CS_PIN 5
@@ -27,44 +28,18 @@ bool dev_mode = true;      // Development mode flag
 bool show_intro = false;   // Show intro animation flag
 int currentScreen = 3;     // Current display screen (0=RPM, 1=Temp, 2=RPM Meter, 3=Detailed Temp)
 
-// === CAN DATA (DME) ===
-// DME1 (0x316) - Engine Status and Performance
-struct {
-    bool ignition = false;  // Engine running status
-    bool cranking = false;  // Engine cranking status
-    bool tcs = false;      // Traction Control Status
-    int torque = -1;       // Engine torque percentage (0-100)
-    int rpm = -1;          // Engine speed (RPM)
-    int torqueLoss = -1;   // Torque loss percentage (0-100)
-} dme1;
+// === BMW CAN DATA ===
+BMW_DME1_t dme1 = {0};
+BMW_DME2_t dme2 = {0};
+BMW_DME4_t dme4 = {0};
+BMW_MS42_Temp_t ms42_temp = {0};
+BMW_MS42_Status_t ms42_status = {0};
+BMW_Kombi_t kombi = {0};
 
-// DME2 (0x329) - Engine Temperatures and Pressure
-struct {
-    int coolantTemp = -999;    // Engine coolant temperature (°C)
-    int manifoldPressure = -999; // Intake manifold pressure (mbar)
-} dme2;
+BMW_CAN_Context_t bmw_ctx = {&dme1, &dme2, &dme4, &ms42_temp, &ms42_status, &kombi};
 
-// DME4 (0x545) - Warning Lights
-struct {
-    bool mil = false;  // Check Engine Light
-    bool cruise = false; // Cruise Control Status
-    bool eml = false;  // Engine Management Light
-} dme4;
-
-// === K-LINE DATA (MS42) ===
-// Engine Temperatures
-struct {
-    int intakeTemp = -999;     // Intake air temperature (°C)
-    int oilTemp = -999;        // Engine oil temperature (°C)
-    int outletTemp = -999;     // Coolant outlet temperature (°C)
-} ms42_temp;
-
-// Engine Status
-struct {
-    int fuelPressure = -999;   // Fuel pressure (bar)
-    int lambda = -999;         // Lambda value (0.8-1.2)
-    int maf = -999;           // Mass Air Flow (kg/h)
-} ms42_status;
+// === KAWASAKI CAN DATA ===
+Kawasaki_CAN_Data_t kawasaki_data = {0};
 
 // === DISPLAY STATE ===
 char displayBuffer[32];
@@ -90,12 +65,6 @@ const int HIGH_TEMP_THRESHOLD = 100;  // Temperature threshold for warning icons
 const int MIN_INTAKE_TEMP = 20;       // Minimum intake temperature
 const int MAX_INTAKE_TEMP = 60;       // Maximum intake temperature
 
-// === INSTRUMENT CLUSTER DATA ===
-struct {
-    char vin[8] = {0};        // Last 7 digits of VIN + null terminator
-    bool vinReceived = false; // Flag to track if VIN has been received
-} kombi;
-
 // === HARDWARE OBJECTS ===
 MCP_CAN CAN(CAN_CS_PIN);
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
@@ -111,53 +80,23 @@ void emptyAllData();
 
 void readCAN()
 {
-      if (CAN.checkReceive() == CAN_MSGAVAIL) {
+    if (CAN.checkReceive() == CAN_MSGAVAIL) {
         unsigned long rxId;
         unsigned char len = 0;
         unsigned char buf[8];
         CAN.readMsgBuf(&rxId, &len, buf);
-    
-        Serial.printf("📡 ID: 0x%03lX  LEN: %d  DATA:", rxId, len);
+
+        Serial.printf("ID: 0x%03lX  LEN: %d  DATA:", rxId, len);
         for (int i = 0; i < len; i++) {
-          Serial.printf(" %02X", buf[i]);
+            Serial.printf(" %02X", buf[i]);
         }
         Serial.println();
-    
-        // === Decode known frames ===
-        if (rxId == 0x316 && len >= 8) {
-          dme1.ignition = (buf[0] & 0x01) > 0; 
-          Serial.printf("Ignition: %d\n", dme1.ignition);
-          dme1.cranking = (buf[0] & 0x02) > 0;
-          Serial.printf("Cranking: %d\n", dme1.cranking);
-          dme1.tcs = (buf[0] & 0x04) > 0;
-          Serial.printf("TCS: %d\n", dme1.tcs);
-          dme1.torque = buf[1];
-          Serial.printf("Torque: %d\n", dme1.torque);
-          dme1.rpm = (buf[3] << 8) | buf[2];
-          Serial.printf("RPM: %d\n", dme1.rpm);
-          dme1.torqueLoss = buf[5];
-          Serial.printf("Torque Loss: %d\n", dme1.torqueLoss);
-          displayUpdated = true;
-        }
-    
-        else if (rxId == 0x329 && len >= 3) {
-          dme2.coolantTemp = (int)((float)buf[1] * 0.75 - 48);
-          Serial.printf("Coolant Temp: %d\n", dme2.coolantTemp);
-          dme2.manifoldPressure = buf[2] == 0xFF ? -999 : (int)(buf[2] * 2 + 598);
-          Serial.printf("Manifold Pressure: %d\n", dme2.manifoldPressure);
-          displayUpdated = true;
-        }
-    
-        else if (rxId == 0x545 && len >= 1) {
-          dme4.mil = (buf[0] & 0x02) > 0;
-          Serial.printf("MIL: %d\n", dme4.mil);
-          dme4.cruise = (buf[0] & 0x08) > 0;
-          Serial.printf("Cruise: %d\n", dme4.cruise);
-          dme4.eml = (buf[0] & 0x10) > 0;
-          Serial.printf("EML: %d\n", dme4.eml);
-          displayUpdated = true;
-        }
-      }
+
+        // === BMW CAN Parsing ===
+        BMW_parseCANMessage(rxId, len, buf, &bmw_ctx, &displayUpdated);
+        // === Kawasaki CAN Parsing ===
+        Kawasaki_parseCANMessage(rxId, len, buf, &kawasaki_data, &displayUpdated);
+    }
 }
 
 void handleSerialInput() {
@@ -221,7 +160,7 @@ void handleSerialInput() {
         }
         else if (strcmp(serialBuffer, "getvin") == 0) {
             if (!dev_mode) {
-                requestVIN();
+                //requestVIN();
                 Serial.println("Requesting VIN from instrument cluster...");
             } else {
                 Serial.println("VIN request only works in real mode");
