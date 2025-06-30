@@ -9,6 +9,9 @@
 #include "SPIFFS.h"
 #include "BMW_CAN.h"
 #include "Kawasaki_CAN.h"
+#include "CAN_Reader.h"
+#include "Serial_Handler.h"
+#include "FakeDataGenerator.h"
 
 // === PIN DEFINITIONS ===
 #define CAN_CS_PIN 5
@@ -28,6 +31,9 @@ bool dev_mode = true;      // Development mode flag
 bool show_intro = false;   // Show intro animation flag
 int currentScreen = 3;     // Current display screen (0=RPM, 1=Temp, 2=RPM Meter, 3=Detailed Temp)
 
+// === VEHICLE CONFIGURATION ===
+VehicleType_t vehicleType = VEHICLE_BMW;  // Set to BMW by default
+
 // === BMW CAN DATA ===
 BMW_DME1_t dme1 = {0};
 BMW_DME2_t dme2 = {0};
@@ -41,15 +47,16 @@ BMW_CAN_Context_t bmw_ctx = {&dme1, &dme2, &dme4, &ms42_temp, &ms42_status, &kom
 // === KAWASAKI CAN DATA ===
 Kawasaki_CAN_Data_t kawasaki_data = {0};
 
+// === CAN READER CONTEXT ===
+CAN_Reader_Context_t can_reader_ctx;
+
+// === SERIAL HANDLER CONTEXT ===
+Serial_Handler_Context_t serial_handler_ctx;
+
 // === DISPLAY STATE ===
 char displayBuffer[32];
 bool displayUpdated = false;
 uint8_t bmw_animation[FRAME_SIZE];
-
-// === SERIAL COMMAND HANDLING ===
-const int SERIAL_BUFFER_SIZE = 32;
-char serialBuffer[SERIAL_BUFFER_SIZE];
-int serialBufferIndex = 0;
 
 // === RPM METER CONFIGURATION ===
 const int NUM_BARS = 6;
@@ -69,7 +76,7 @@ const int MAX_INTAKE_TEMP = 60;       // Maximum intake temperature
 MCP_CAN CAN(CAN_CS_PIN);
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
 
-// Functions
+// Function prototypes
 void drawIntro();
 void drawTemperatureScreen();
 void drawRPMScreen();
@@ -78,109 +85,39 @@ void drawDetailedTemperatureScreen();
 void updateFakeData();
 void emptyAllData();
 
-void readCAN()
-{
-    if (CAN.checkReceive() == CAN_MSGAVAIL) {
-        unsigned long rxId;
-        unsigned char len = 0;
-        unsigned char buf[8];
-        CAN.readMsgBuf(&rxId, &len, buf);
+// Serial Handler callback functions
+void handleModeChange(bool devMode);
+void handleIntroShow();
+void handleVINRequest();
+void handleVehicleTypeChange(VehicleType_t vehicleType);
+void handleVehicleStatus(VehicleType_t vehicleType);
 
-        Serial.printf("ID: 0x%03lX  LEN: %d  DATA:", rxId, len);
-        for (int i = 0; i < len; i++) {
-            Serial.printf(" %02X", buf[i]);
-        }
-        Serial.println();
-
-        // === BMW CAN Parsing ===
-        BMW_parseCANMessage(rxId, len, buf, &bmw_ctx, &displayUpdated);
-        // === Kawasaki CAN Parsing ===
-        Kawasaki_parseCANMessage(rxId, len, buf, &kawasaki_data, &displayUpdated);
+// Callback function implementations
+void handleModeChange(bool devMode) {
+    if (devMode) {
+        updateFakeData();
+    } else {
+        emptyAllData();
     }
 }
 
-void handleSerialInput() {
-  while (Serial.available()) {
-    char c = Serial.read();
-    
-    // Handle backspace
-    if (c == '\b' || c == 127) {
-      if (serialBufferIndex > 0) {
-        serialBufferIndex--;
-        Serial.print("\b \b"); // Erase the character on screen
-      }
-      continue;
-    }
-    
-    // Handle enter key
-    if (c == '\n' || c == '\r') {
-      if (serialBufferIndex > 0) {
-        serialBuffer[serialBufferIndex] = '\0'; // Null terminate the string
-        
-        // Process the command
-        if (strcmp(serialBuffer, "screen1") == 0) {
-          currentScreen = 0;
-          Serial.println("Switched to RPM Screen");
-        }
-        else if (strcmp(serialBuffer, "screen2") == 0) {
-          currentScreen = 1;
-          Serial.println("Switched to Temperature Screen");
-        }
-        else if (strcmp(serialBuffer, "screen3") == 0) {
-          currentScreen = 2;
-          Serial.println("Switched to RPM Meter Screen");
-        }
-        else if (strcmp(serialBuffer, "screen4") == 0) {
-          currentScreen = 3;
-          Serial.println("Switched to Detailed Temperature Screen");
-        }
-        else if (strcmp(serialBuffer, "demo") == 0) {
-          dev_mode = true;
-          Serial.println("Switched to Development/Demo Mode");
-        }
-        else if (strcmp(serialBuffer, "real") == 0) {
-          dev_mode = false;
-          emptyAllData();  // Reset all values to invalid states
-          Serial.println("Switched to Real Mode - Waiting for CAN data...");
-        }
-        else if (strcmp(serialBuffer, "showintro") == 0) {
-          drawIntro();
-          Serial.println("Showing Intro");
-        }
-        else if (strcmp(serialBuffer, "help") == 0) {
-          Serial.println("\nAvailable commands:");
-          Serial.println("screen1 - RPM Screen");
-          Serial.println("screen2 - Temperature Screen");
-          Serial.println("screen3 - RPM Meter Screen");
-          Serial.println("screen4 - Detailed Temperature Screen");
-          Serial.println("demo - Switch to Development/Demo Mode");
-          Serial.println("real - Switch to Real Mode (CAN data)");
-          Serial.println("showintro - Show Intro");
-          Serial.println("getvin - Request VIN from instrument cluster");
-        }
-        else if (strcmp(serialBuffer, "getvin") == 0) {
-            if (!dev_mode) {
-                //requestVIN();
-                Serial.println("Requesting VIN from instrument cluster...");
-            } else {
-                Serial.println("VIN request only works in real mode");
-            }
-        }
-        else {
-          Serial.println("Unknown command. Type 'help' for available commands.");
-        }
-        
-        // Reset buffer
-        serialBufferIndex = 0;
-        Serial.print("> "); // Show prompt
-      }
-    }
-    // Handle regular character input
-    else if (serialBufferIndex < SERIAL_BUFFER_SIZE - 1) {
-      serialBuffer[serialBufferIndex++] = c;
-      Serial.print(c); // Echo the character
-    }
-  }
+void handleIntroShow() {
+    drawIntro();
+}
+
+void handleVINRequest() {
+    // TODO: Implement VIN request functionality
+    // This would typically send a CAN message to request VIN from instrument cluster
+}
+
+void handleVehicleTypeChange(VehicleType_t vehicleType) {
+    // Vehicle type change is handled in the Serial_Handler
+    // This callback can be used for additional actions when vehicle type changes
+}
+
+void handleVehicleStatus(VehicleType_t vehicleType) {
+    // Vehicle status is handled in the Serial_Handler
+    // This callback can be used for additional status reporting
 }
 
 void setup() {
@@ -196,6 +133,24 @@ void setup() {
     while (1);
   }
   CAN.setMode(MCP_NORMAL);
+
+  // Initialize CAN Reader
+  CAN_Reader_init(&can_reader_ctx, vehicleType, &CAN, &displayUpdated);
+
+  // Initialize Serial Handler
+  Serial_Handler_init(&serial_handler_ctx, 
+                     &currentScreen, 
+                     &dev_mode, 
+                     &vehicleType,
+                     &can_reader_ctx,
+                     &CAN,
+                     &displayUpdated,
+                     nullptr,  // screenChangeCallback (not needed as we handle it directly)
+                     handleModeChange,
+                     handleIntroShow,
+                     handleVINRequest,
+                     handleVehicleTypeChange,
+                     handleVehicleStatus);
 
   // OLED setup
   u8g2.begin();
@@ -391,8 +346,8 @@ void drawRPMScreen() {
   
   // === Footer ===
   u8g2.setFont(u8g2_font_5x8_tr);
-  u8g2.drawStr(0, 63, "E46 328i  A3228HX");
-  u8g2.drawStr(100, 63, "13.8V");
+  u8g2.drawStr(0, 63, "TEST TEST RPMLINK");
+  u8g2.drawStr(100, 63, "12.8V");
   
   u8g2.sendBuffer();
 }
@@ -553,65 +508,6 @@ void drawDetailedTemperatureScreen() {
   u8g2.sendBuffer();
 }
 
-void updateFakeData() {
-    static unsigned long lastUpdate = 0;
-    static int rpmDirection = 1;
-    static int rpmAcceleration = 0;
-    static int targetRPM = 2000;
-    
-    unsigned long now = millis();
-    if (now - lastUpdate < 50) return;
-    lastUpdate = now;
-    
-    // Simulate RPM with acceleration and deceleration
-    if (abs(dme1.rpm - targetRPM) < 100) {
-        targetRPM = random(3500, 7300);
-        rpmAcceleration = random(10, 350) * rpmDirection;
-    }
-    
-    dme1.rpm += rpmAcceleration;
-    dme1.rpm = constrain(dme1.rpm, 800, 7500);
-    
-    // Simulate engine temperature based on RPM
-    float tempChange = (dme1.rpm - 2000) * 0.001;
-    dme2.coolantTemp += tempChange;
-    dme2.coolantTemp = constrain(dme2.coolantTemp, 80, 110);
-    
-    // Simulate MS42 temperatures
-    ms42_temp.oilTemp = dme2.coolantTemp - random(5, 15);
-    ms42_temp.oilTemp = constrain(ms42_temp.oilTemp, 70, 105);
-    
-    ms42_temp.outletTemp = dme2.coolantTemp - 10;
-    
-    // Simulate intake temperature
-    static unsigned long lastIntakeUpdate = 0;
-    if (now - lastIntakeUpdate > 500) {
-        ms42_temp.intakeTemp += random(-2, 3);
-        ms42_temp.intakeTemp = constrain(ms42_temp.intakeTemp, MIN_INTAKE_TEMP, MAX_INTAKE_TEMP);
-        lastIntakeUpdate = now;
-    }
-    
-    // Simulate torque values
-    dme1.torque = map(dme1.rpm, 800, 7000, 20, 100);
-    dme1.torque = constrain(dme1.torque, 20, 100);
-    
-    dme1.torqueLoss = map(dme1.rpm, 800, 7000, 0, 30);
-    dme1.torqueLoss = constrain(dme1.torqueLoss, 0, 30);
-    
-    // Add random variations
-    dme1.rpm += random(-10, 11);
-    dme2.coolantTemp += random(-1, 2);
-    ms42_temp.oilTemp += random(-1, 2);
-    dme1.torque += random(-2, 3);
-    dme1.torqueLoss += random(-1, 2);
-    
-    // Ensure all values stay within ranges
-    dme1.rpm = constrain(dme1.rpm, 800, 7500);
-    dme2.coolantTemp = constrain(dme2.coolantTemp, 80, 110);
-    ms42_temp.oilTemp = constrain(ms42_temp.oilTemp, 70, 105);
-    dme1.torque = constrain(dme1.torque, 20, 100);
-    dme1.torqueLoss = constrain(dme1.torqueLoss, 0, 30);
-}
 
 void emptyAllData() {
     // Reset DME1 values
@@ -646,7 +542,7 @@ void emptyAllData() {
 
 void loop() {
   // Handle any serial input
-  handleSerialInput();
+  Serial_Handler_processInput(&serial_handler_ctx);
   
   // Draw appropriate screen
   if (currentScreen == 1) {
@@ -660,9 +556,10 @@ void loop() {
   }
   
   if (dev_mode) {
-    updateFakeData();
+    FakeDataGenerator_updateBMW(&bmw_ctx);
+    // FakeDataGenerator_updateKawasaki(&kawasaki_data);
   } else {
-    readCAN();
+    CAN_Reader_readMessages(&can_reader_ctx, &bmw_ctx, &kawasaki_data);
     delay(100);
   }
 }
